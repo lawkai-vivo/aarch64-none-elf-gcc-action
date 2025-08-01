@@ -5,15 +5,28 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import * as tc from '@actions/tool-cache';
 import * as cache from '@actions/cache';
-import md5File from 'md5-file';
+import sha256File from 'sha256-file';
+import axios from 'axios';
 
 import * as gcc from './gcc';
 
+async function getSha256ascOf(tarballUrl: string): Promise<string> {
+  const sha256Url = tarballUrl + '.sha256asc';
+  const response = await axios.get<string>(sha256Url);
+  const sha256Content = response.data;
+  const sha256Match = sha256Content.match(/^([a-fA-F0-9]{64})/);
+  if (sha256Match) {
+    return sha256Match[1];
+  }
+  throw new Error('Could not extract SHA256 from the file.');
+}
+
 export async function install(release: string, platform: string, arch: string): Promise<string> {
-  const toolName = 'gcc-arm-none-eabi';
+  const toolName = 'gcc-aarch64-none-elf';
 
   // Get the GCC release info
   const distData = gcc.distributionUrl(release, platform, arch);
+  const sha256sum = await getSha256ascOf(distData.url);
 
   // Convert the GCC version to Semver so that it can be used with the GH cache
   const toolVersion = gcc.gccVersionToSemver(release);
@@ -31,29 +44,29 @@ export async function install(release: string, platform: string, arch: string): 
   }
   if (cacheKeyMatched === cacheKey) {
     core.info(`Cache found: ${installPath}`);
-    let cacheMd5 = 'MD5 not found in cached installation';
+    let cachesha256 = 'sha256 not found in cached installation';
     try {
-      cacheMd5 = await fs.promises.readFile(path.join(installPath, 'md5.txt'), {encoding: 'utf8'});
+      cachesha256 = await fs.promises.readFile(path.join(installPath, 'sha256asc'), {encoding: 'utf8'});
     } catch (err) {
-      core.warning(`⚠️ Could not read the contents of the cached GCC version MD5.\n${err.message}`);
+      core.warning(`⚠️ Could not read the contents of the cached GCC version sha256.\n${err.message}`);
     }
-    core.info(`Cached version MD5: ${cacheMd5}`);
-    if (cacheMd5 !== distData.md5) {
-      core.warning(`⚠️ Cached version MD5 does not match: ${cacheMd5} != ${distData.md5}`);
+    core.info(`Cached version sha256: ${cachesha256}`);
+    if (cachesha256 !== sha256sum) {
+      core.warning(`⚠️ Cached version sha256 does not match: ${cachesha256} != ${sha256sum}`);
     } else {
       core.info('Cached version loaded.');
       return installPath;
     }
   }
 
-  core.info(`Cache miss, downloading GCC ${release} from ${distData.url} ; MD5 ${distData.md5}`);
+  core.info(`Cache miss, downloading GCC ${release} from ${distData.url} ; SHA256 ${sha256sum}`);
   const gccDownloadPath = await tc.downloadTool(distData.url);
 
-  core.info(`GCC release downloaded, calculating MD5...`);
-  const downloadHash = await md5File(gccDownloadPath);
-  core.info(`Downloaded file MD5: ${downloadHash}`);
-  if (distData.md5 && downloadHash !== distData.md5) {
-    throw new Error(`Downloaded GCC MD5 doesn't match expected value: ${downloadHash} != ${distData.md5}`);
+  core.info(`GCC release downloaded, calculating SH6A25...`);
+  const downloadHash = sha256File(gccDownloadPath);
+  core.info(`Downloaded file sha256: ${downloadHash}`);
+  if (sha256sum && downloadHash !== sha256sum) {
+    throw new Error(`Downloaded GCC sha256 doesn't match expected value: ${downloadHash} != ${sha256sum}`);
   }
 
   core.info(`Extracting ${gccDownloadPath}`);
@@ -70,7 +83,7 @@ export async function install(release: string, platform: string, arch: string): 
 
   // Adding installation to the cache
   core.info(`Adding to cache: ${extractedPath}`);
-  await fs.promises.writeFile(path.join(extractedPath, 'md5.txt'), downloadHash, {encoding: 'utf8'});
+  await fs.promises.writeFile(path.join(extractedPath, 'sha256asc'), downloadHash, {encoding: 'utf8'});
   try {
     await cache.saveCache([extractedPath], cacheKey);
   } catch (err) {
@@ -100,5 +113,5 @@ function findGccRecursive(dir: string, executableName: string): string {
 
 export function findGcc(root: string, platform?: string): string {
   platform = platform || process.platform;
-  return findGccRecursive(root, `arm-none-eabi-gcc${platform === 'win32' ? '.exe' : ''}`);
+  return findGccRecursive(root, `aarch64-none-elf-gcc${platform === 'win32' ? '.exe' : ''}`);
 }
